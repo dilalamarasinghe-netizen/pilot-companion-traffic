@@ -5,7 +5,9 @@ on:
 
   repository_dispatch:
     types: [traffic-scan]
-
+concurrency:
+  group: global-aircraft-traffic
+  cancel-in-progress: false
 jobs:
   collect-traffic:
     runs-on: ubuntu-latest
