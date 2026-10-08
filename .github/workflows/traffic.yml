@@ -1,9 +1,6 @@
 name: Global Aircraft Traffic Collector
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
-
   workflow_dispatch:
 
   repository_dispatch:
