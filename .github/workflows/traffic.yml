@@ -6,6 +6,9 @@ on:
 
   workflow_dispatch:
 
+  repository_dispatch:
+    types: [traffic-scan]
+
 jobs:
   collect-traffic:
     runs-on: ubuntu-latest
