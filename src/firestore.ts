@@ -29,10 +29,18 @@ export type StoredAircraftState = {
   registration?: string;
   aircraftType?: string;
   lastRealUpdate: number;
+  squawk?: string;
+  departureIata?: string;
+  departureIcao?: string;
+  arrivalIata?: string;
+  arrivalIcao?: string;
 };
 
 type TrafficAircraft = StoredAircraftState & {
-  source: "adsbLol" | "estimated";
+  source:
+    | "adsbLol"
+    | "airLabs"
+    | "estimated";
   lastUpdated: number;
 };
 
@@ -90,6 +98,26 @@ function cleanAircraft(
     result.aircraftType = aircraft.aircraftType;
   }
 
+  if (aircraft.squawk !== undefined) {
+    result.squawk = aircraft.squawk;
+  }
+
+  if (aircraft.departureIata !== undefined) {
+    result.departureIata = aircraft.departureIata;
+  }
+
+  if (aircraft.departureIcao !== undefined) {
+    result.departureIcao = aircraft.departureIcao;
+  }
+
+  if (aircraft.arrivalIata !== undefined) {
+    result.arrivalIata = aircraft.arrivalIata;
+  }
+
+  if (aircraft.arrivalIcao !== undefined) {
+    result.arrivalIcao = aircraft.arrivalIcao;
+  }
+
   return result;
 }
 
@@ -134,32 +162,63 @@ export async function loadAircraftStates(): Promise<
         icao24: aircraft.icao24,
         latitude: aircraft.latitude,
         longitude: aircraft.longitude,
+
         altitude:
           typeof aircraft.altitude === "number"
             ? aircraft.altitude
             : undefined,
+
         groundSpeed:
           typeof aircraft.groundSpeed === "number"
             ? aircraft.groundSpeed
             : undefined,
+
         track:
           typeof aircraft.track === "number"
             ? aircraft.track
             : undefined,
+
         callsign:
           typeof aircraft.callsign === "string"
             ? aircraft.callsign
             : undefined,
+
         registration:
           typeof aircraft.registration === "string"
             ? aircraft.registration
             : undefined,
+
         aircraftType:
           typeof aircraft.aircraftType === "string"
             ? aircraft.aircraftType
             : undefined,
-        lastRealUpdate:
-          aircraft.lastRealUpdate,
+
+        squawk:
+          typeof aircraft.squawk === "string"
+            ? aircraft.squawk
+            : undefined,
+
+        departureIata:
+          typeof aircraft.departureIata === "string"
+            ? aircraft.departureIata
+            : undefined,
+
+        departureIcao:
+          typeof aircraft.departureIcao === "string"
+            ? aircraft.departureIcao
+            : undefined,
+
+        arrivalIata:
+          typeof aircraft.arrivalIata === "string"
+            ? aircraft.arrivalIata
+            : undefined,
+
+        arrivalIcao:
+          typeof aircraft.arrivalIcao === "string"
+            ? aircraft.arrivalIcao
+            : undefined,
+
+        lastRealUpdate: aircraft.lastRealUpdate,
       });
     }
   }
@@ -170,18 +229,14 @@ export async function loadAircraftStates(): Promise<
 export async function writeTrafficCache(
   aircraft: TrafficAircraft[],
 ): Promise<void> {
-  const shards: TrafficAircraft[][] =
-    Array.from(
-      { length: SHARD_COUNT },
-      () => [],
-    );
+  const shards: TrafficAircraft[][] = Array.from(
+    { length: SHARD_COUNT },
+    () => [],
+  );
 
   for (const item of aircraft) {
     const shardId = getShardId(item.icao24);
-
-    shards[shardId].push(
-      cleanAircraft(item),
-    );
+    shards[shardId].push(cleanAircraft(item));
   }
 
   const batch = db.batch();

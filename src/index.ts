@@ -4,6 +4,15 @@ import {
 } from "./adsb.js";
 
 import {
+  fetchAirLabsTraffic,
+} from "./airlabs.js";
+
+import {
+  reconcileTraffic,
+  ReconciledAircraft,
+} from "./reconciler.js";
+
+import {
   loadAircraftStates,
   writeTrafficCache,
 } from "./firestore.js";
@@ -15,102 +24,13 @@ import {
 const MAX_ESTIMATE_AGE_MS =
   30 * 60 * 1000;
 
-type TrafficAircraft = {
-  icao24: string;
-  latitude: number;
-  longitude: number;
-  altitude?: number;
-  groundSpeed?: number;
-  track?: number;
-  callsign?: string;
-  registration?: string;
-  aircraftType?: string;
-  source: "adsbLol" | "estimated";
-  lastRealUpdate: number;
-  lastUpdated: number;
-};
-
-function normalizeIcao24(
-  hex?: string,
-): string | null {
-  if (!hex) {
-    return null;
-  }
-
-  const value =
-    hex.trim().toLowerCase();
-
-  if (!/^[0-9a-f]{6}$/.test(value)) {
-    return null;
-  }
-
-  return value;
-}
-
-function getAltitude(
-  value: number | string | undefined,
-): number | undefined {
-  if (
-    typeof value === "number" &&
-    Number.isFinite(value)
-  ) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const parsed = Number(value);
-
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  return undefined;
-}
-
-function createState(
-  aircraft: AdsbAircraft,
-  now: number,
-): TrafficAircraft | null {
-  const icao24 =
-    normalizeIcao24(aircraft.hex);
-
-  if (
-    !icao24 ||
-    typeof aircraft.lat !== "number" ||
-    typeof aircraft.lon !== "number"
-  ) {
-    return null;
-  }
-
-  return {
-    icao24,
-    latitude: aircraft.lat,
-    longitude: aircraft.lon,
-    altitude:
-      getAltitude(aircraft.alt_baro),
-    groundSpeed:
-      typeof aircraft.gs === "number"
-        ? aircraft.gs
-        : undefined,
-    track:
-      typeof aircraft.track === "number"
-        ? aircraft.track
-        : undefined,
-    callsign:
-      aircraft.flight?.trim() ||
-      undefined,
-    registration:
-      aircraft.r?.trim() ||
-      undefined,
-    aircraftType:
-      aircraft.t?.trim() ||
-      undefined,
-    source: "adsbLol",
-    lastRealUpdate: now,
-    lastUpdated: now,
+type TrafficAircraft =
+  ReconciledAircraft & {
+    source:
+      | "adsbLol"
+      | "airLabs"
+      | "estimated";
   };
-}
 
 async function collectTraffic(): Promise<void> {
   const now = Date.now();
@@ -119,40 +39,85 @@ async function collectTraffic(): Promise<void> {
     "Fetching global ADS-B traffic...",
   );
 
-  const rawAircraft =
-    await fetchTraffic();
+  const adsbPromise =
+    fetchTraffic();
 
   console.log(
-    `Received ${rawAircraft.length} aircraft.`,
+    "Fetching AirLabs traffic...",
+  );
+
+  const airLabsPromise =
+    fetchAirLabsTraffic();
+
+  const [
+  adsbResult,
+  airLabsResult,
+] = await Promise.allSettled([
+  adsbPromise,
+  airLabsPromise,
+]);
+
+const rawAdsbAircraft: AdsbAircraft[] =
+  adsbResult.status === "fulfilled"
+    ? adsbResult.value
+    : [];
+
+const airLabsAircraft =
+  airLabsResult.status === "fulfilled"
+    ? airLabsResult.value
+    : [];
+
+if (adsbResult.status === "rejected") {
+  console.error(
+    "ADSB.lol unavailable; continuing with AirLabs if available.",
+    adsbResult.reason,
+  );
+}
+
+if (airLabsResult.status === "rejected") {
+  console.error(
+    "AirLabs unavailable; continuing with ADSB.lol if available.",
+    airLabsResult.reason,
+  );
+}
+
+if (
+  adsbResult.status === "rejected" &&
+  airLabsResult.status === "rejected"
+) {
+  throw new Error(
+    "Both traffic providers failed. Existing traffic cache was not overwritten.",
+  );
+}
+
+  console.log(
+    `ADSB.lol aircraft: ${rawAdsbAircraft.length}`,
+  );
+
+  console.log(
+    `AirLabs aircraft: ${airLabsAircraft.length}`,
+  );
+
+  const liveAircraft =
+    reconcileTraffic(
+      rawAdsbAircraft,
+      airLabsAircraft,
+      now,
+    );
+
+  console.log(
+    `Reconciled live aircraft: ${liveAircraft.length}`,
   );
 
   const currentAircraft =
     new Map<string, TrafficAircraft>();
 
-  for (const aircraft of rawAircraft) {
-    if (aircraft.on_ground === true) {
-      continue;
-    }
-
-    const state =
-      createState(
-        aircraft,
-        now,
-      );
-
-    if (!state) {
-      continue;
-    }
-
+  for (const aircraft of liveAircraft) {
     currentAircraft.set(
-      state.icao24,
-      state,
+      aircraft.icao24,
+      aircraft,
     );
   }
-
-  console.log(
-    `Valid airborne aircraft: ${currentAircraft.size}`,
-  );
 
   console.log(
     "Loading previous aircraft states...",
@@ -201,20 +166,34 @@ async function collectTraffic(): Promise<void> {
       previous.icao24,
       {
         icao24: previous.icao24,
-        latitude: estimated.latitude,
-        longitude: estimated.longitude,
-        altitude: previous.altitude,
+        latitude:
+          estimated.latitude,
+        longitude:
+          estimated.longitude,
+
+        altitude:
+          previous.altitude,
+
         groundSpeed:
           previous.groundSpeed,
-        track: previous.track,
-        callsign: previous.callsign,
+
+        track:
+          previous.track,
+
+        callsign:
+          previous.callsign,
+
         registration:
           previous.registration,
+
         aircraftType:
           previous.aircraftType,
+
         source: "estimated",
+
         lastRealUpdate:
           previous.lastRealUpdate,
+
         lastUpdated: now,
       },
     );
@@ -229,14 +208,36 @@ async function collectTraffic(): Promise<void> {
     `Writing ${output.length} aircraft into 32 Firestore shards...`,
   );
 
-  await writeTrafficCache(output);
+  await writeTrafficCache(
+    output,
+  );
+
+  const adsbCount =
+    output.filter(
+      (aircraft) =>
+        aircraft.source === "adsbLol",
+    ).length;
+
+  const airLabsCount =
+    output.filter(
+      (aircraft) =>
+        aircraft.source === "airLabs",
+    ).length;
 
   console.log(
-    `Traffic cache updated: ${output.length} aircraft.`,
+    `ADSB.lol used: ${adsbCount}`,
+  );
+
+  console.log(
+    `AirLabs used: ${airLabsCount}`,
   );
 
   console.log(
     `Estimated aircraft: ${estimatedCount}`,
+  );
+
+  console.log(
+    `Traffic cache updated: ${output.length} aircraft.`,
   );
 
   console.log(
