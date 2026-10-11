@@ -16,7 +16,7 @@ initializeApp({
 const db = getFirestore();
 
 const TRAFFIC_COLLECTION = "trafficShards";
-const SHARD_COUNT = 32;
+const SHARD_COUNT = 8;
 
 export type StoredAircraftState = {
   icao24: string;
