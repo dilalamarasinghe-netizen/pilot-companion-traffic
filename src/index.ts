@@ -205,7 +205,7 @@ if (
     );
 
   console.log(
-    `Writing ${output.length} aircraft into 32 Firestore shards...`,
+    `Writing ${output.length} aircraft into the configured Firestore shards...`,
   );
 
   await writeTrafficCache(
