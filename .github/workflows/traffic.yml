@@ -36,6 +36,53 @@ jobs:
       - name: Build collector
         run: npx tsc
 
+      - name: Diagnose ADSB.lol connectivity
+        run: |
+          node --input-type=module <<'NODE'
+          const url = "https://api.adsb.lol/v2/point/0/0/20000";
+
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            const started = Date.now();
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+
+            try {
+              console.log(`ADSB.lol diagnostic attempt ${attempt}/3`);
+
+              const response = await fetch(url, {
+                signal: controller.signal,
+                headers: {
+                  "User-Agent": "Pilot Companion connectivity diagnostic"
+                }
+              });
+
+              console.log(`HTTP status: ${response.status}`);
+              console.log(`Elapsed: ${Date.now() - started}ms`);
+
+              await response.body?.cancel();
+
+              if (response.ok) {
+                console.log("ADSB.lol connectivity test passed.");
+                process.exitCode = 0;
+                break;
+              }
+
+              console.error(`Unexpected HTTP status: ${response.status}`);
+            } catch (error) {
+              console.error(`Request failed: ${error}`);
+              console.error(
+                `Error cause: ${error?.cause?.code ?? "unknown"}`
+              );
+            } finally {
+              clearTimeout(timeout);
+            }
+
+            if (attempt < 3) {
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          }
+          NODE
+
       - name: Run traffic collector
         env:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase-service-account.json
