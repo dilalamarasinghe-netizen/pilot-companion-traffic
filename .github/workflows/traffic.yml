@@ -1,3 +1,4 @@
+```yaml
 name: Global Aircraft Traffic Collector
 
 on:
@@ -13,6 +14,7 @@ concurrency:
 jobs:
   collect-traffic:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
@@ -32,89 +34,47 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
           printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > firebase-service-account.json
+          chmod 600 firebase-service-account.json
 
       - name: Build collector
         run: npx tsc
 
-      - name: Diagnose ADSB.lol endpoints
-        run: |
-          node --input-type=module <<'NODE'
-          const endpoints = [
-            {
-              name: "Global",
-              url: "https://api.adsb.lol/v2/point/0/0/20000"
-            },
-            {
-              name: "Regional",
-              url: "https://api.adsb.lol/v2/point/7.0/80.0/250"
-            }
-          ];
-
-          for (const endpoint of endpoints) {
-            console.log(`\nTesting ${endpoint.name} endpoint`);
-
-            let succeeded = false;
-
-            for (let attempt = 1; attempt <= 2; attempt++) {
-              const started = Date.now();
-              const controller = new AbortController();
-              const timeout = setTimeout(
-                () => controller.abort(),
-                15000
-              );
-
-              try {
-                console.log(`Attempt ${attempt}/2`);
-
-                const response = await fetch(endpoint.url, {
-                  signal: controller.signal,
-                  headers: {
-                    "User-Agent": "Pilot Companion connectivity diagnostic"
-                  }
-                });
-
-                console.log(`HTTP status: ${response.status}`);
-                console.log(`Elapsed: ${Date.now() - started}ms`);
-
-                await response.body?.cancel();
-
-                if (response.ok) {
-                  console.log(`${endpoint.name} endpoint reachable.`);
-                  succeeded = true;
-                  break;
-                }
-
-                console.error(
-                  `Unexpected HTTP status: ${response.status}`
-                );
-              } catch (error) {
-                console.error(`Request failed: ${error}`);
-                console.error(
-                  `Cause: ${error?.cause?.code ?? "unknown"}`
-                );
-              } finally {
-                clearTimeout(timeout);
-              }
-
-              if (attempt < 2) {
-                await new Promise(resolve => setTimeout(resolve, 2000));
-              }
-            }
-
-            if (!succeeded) {
-              console.error(
-                `${endpoint.name} endpoint failed both diagnostic attempts.`
-              );
-            }
-          }
-          NODE
-
       - name: Run traffic collector
+        id: collector
+        continue-on-error: true
         env:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase-service-account.json
           AIRLABS_API_KEY: ${{ secrets.AIRLABS_API_KEY }}
         run: node dist/index.js
 
+      - name: Diagnose ADSB.lol connectivity after failure
+        if: steps.collector.outcome == 'failure'
+        run: |
+          echo "The traffic collector failed. Checking ADSB.lol connectivity."
+
+          for endpoint in \
+            "https://api.adsb.lol/v2/point/0/0/20000" \
+            "https://api.adsb.lol/v2/point/7.0/80.0/250"
+          do
+            echo ""
+            echo "Testing: $endpoint"
+
+            curl --silent --show-error \
+              --output /dev/null \
+              --write-out "HTTP status: %{http_code}\nConnection time: %{time_connect}s\nTotal time: %{time_total}s\n" \
+              --connect-timeout 10 \
+              --max-time 20 \
+              "$endpoint" \
+            || echo "Connectivity test failed with exit code $?"
+          done
+
       - name: Remove Firebase credentials
         if: always()
         run: rm -f firebase-service-account.json
+
+      - name: Fail workflow if collection failed
+        if: steps.collector.outcome == 'failure'
+        run: |
+          echo "Traffic collection failed. Check the collector and connectivity diagnostic logs."
+          exit 1
+```
